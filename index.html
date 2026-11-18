@@ -12,7 +12,7 @@
 <div id="app"></div><div id="modal"></div><div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60]"></div>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {getFirestore,collection,doc,onSnapshot,addDoc,updateDoc,writeBatch,increment,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,collection,doc,onSnapshot,addDoc,updateDoc,deleteDoc,writeBatch,increment,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /* ========== PEGA AQUÍ TUS CREDENCIALES DE FIREBASE ========== */
 const firebaseConfig = {
@@ -34,20 +34,20 @@ const toast=m=>{const t=$('#toast');t.innerHTML=`<div class="bg-stone-900 text-w
 
 // ---- Fases y subcategorías ----
 const PHASES=[
- {id:'salud',n:'Salud e Higiene',subs:['Jabones','Papel higiénico','Desodorantes','Cremas dentales','Pañales','Otros']},
- {id:'mercado',n:'Mercado y Despensa',subs:['Arroz','Harinas','Arepas','Panela','Aceite','Granos','Enlatados','Otros']},
- {id:'mecato',n:'Mecato y Dulcería',subs:['Papas','Galletas','Chocolatinas','Dulces','Otros']},
- {id:'neveras',n:'Neveras',subs:['Nevera Postobón','Nevera Coca-Cola','Nevera Bavaria']},
- {id:'vitrinas',n:'Vitrinas',subs:['Vitrina Licores','Vitrina Lácteos y Quesos','Vitrina Cereales y Panadería']},
- {id:'carnes',n:'Carnes y Pescados',subs:['Res','Cerdo','Pollo','Embutidos','Pescado']},
- {id:'fruver',n:'Revueltería (Fruver)',subs:['Frutas','Verduras','Tubérculos']}
+ {id:'salud',n:'Salud e Higiene',ic:'🧴',subs:['Estantería Aseo Personal','Papelería / Hogar']},
+ {id:'mercado',n:'Mercado y Despensa',ic:'🌾',subs:['Granos y Harinas','Arepas y Panadería','Aceites y Enlatados']},
+ {id:'mecato',n:'Mecato y Dulcería',ic:'🍟',subs:['Góndola Papitas','Dulcería y Galletas']},
+ {id:'neveras',n:'Neveras',ic:'❄️',subs:['Nevera Postobón','Nevera Coca-Cola','Nevera Bavaria (Cerveza)']},
+ {id:'vitrinas',n:'Vitrinas',ic:'🪟',subs:['Vitrina Licores / Alcohol','Vitrina Lácteos / Quesos','Estante Cereales']},
+ {id:'carnes',n:'Carnes y Pescados',ic:'🥩',subs:['Congelador Carnes','Congelador Pescados / Pollo']},
+ {id:'fruver',n:'Revueltería (Fruver)',ic:'🥔',subs:['Canastillas Fruver (Peso)']}
 ];
 const phName=id=>PHASES.find(p=>p.id===id)?.n||id;
 const findPhase=s=>{s=norm(s);return PHASES.find(p=>p.id===s||norm(p.n).startsWith(s)||s.startsWith(p.id))?.id||'mercado'};
 const isW=p=>p.saleType==='gramo';
 const stockTxt=p=>isW(p)?(p.stock/1000).toFixed(2)+' kg':p.stock;
 
-let S={user:null,tab:'pos',products:[],sales:[],expenses:[],closes:[],since:0,subbed:false,
+let S={entries:[],fSub:'all',user:null,tab:'pos',products:[],sales:[],expenses:[],closes:[],since:0,subbed:false,
  cart:[],phase:'all',q:'',method:'efectivo',paid:0,cust:'',base:0,fPhase:'all',fQ:'',only0:false,audPhase:'mercado'};
 let unsubs=[];
 
@@ -64,6 +64,7 @@ function start(){
  const col=(n,fn,q)=>onSnapshot(q||collection(db,n),s=>{fn(s.docs.map(d=>({id:d.id,...d.data()})));refresh()});
  unsubs.forEach(x=>x());
  unsubs=[col('products',a=>S.products=a.sort((x,y)=>x.name.localeCompare(y.name)))];
+ unsubs.push(onSnapshot(query(collection(db,'purchases'),orderBy('ts','desc'),limit(15)),q=>{S.entries=q.docs.map(d=>d.data());refresh()}));
  unsubs.push(onSnapshot(query(collection(db,'closes'),orderBy('ts','desc'),limit(30)),s=>{
   S.closes=s.docs.map(d=>({id:d.id,...d.data()}));const since=S.closes[0]?.ts||0;
   if(!S.subbed||since!==S.since){S.since=since;S.subbed=true;shiftSubs()}refresh()}));
@@ -77,17 +78,20 @@ function shiftSubs(){ // ventas y gastos del turno actual (desde el último cier
 
 // ---- Estructura general ----
 const TABS=[['pos','Caja'],['inv','Inventario'],['ent','Entradas'],['falt','Lo que falta'],['cuadre','Cuadre']];
+const ICON={pos:'🛒',inv:'📦',ent:'🚚',falt:'📋',cuadre:'💰'};
 function shell(){
- $('#app').innerHTML=`<header class="bg-stone-900 text-white sticky top-0 z-40"><div class="flex items-center gap-2 p-2 overflow-x-auto">
- ${TABS.map(([k,l])=>`<button class="btn whitespace-nowrap ${S.tab===k?'bg-teal-600':'bg-stone-700'}" onclick="go('${k}')">${l}</button>`).join('')}
- <button class="btn bg-stone-700 ml-auto" onclick="logout()">Salir</button></div></header><main id="main" class="p-3 max-w-7xl mx-auto"></main>`;
- render();
+ $('#app').innerHTML=`<div class="md:flex min-h-screen"><aside class="bg-slate-900 text-slate-100 md:w-60 md:h-screen md:sticky md:top-0 flex md:flex-col gap-1 p-2 overflow-x-auto z-40">
+ <div class="hidden md:block p-3 mb-2"><div class="text-xl font-extrabold">MiniMarket<span class="text-emerald-400">PRO</span></div><div class="text-xs text-slate-400">Control total y caja</div></div>
+ ${TABS.map(([k,l])=>`<button class="btn text-left whitespace-nowrap flex justify-between items-center gap-2 ${S.tab===k?'bg-emerald-600 text-white':'bg-slate-800 text-slate-300'}" onclick="go('${k}')"><span>${ICON[k]} ${l}</span>${k==='falt'?'<span id="bFalta" class="tag bg-rose-500 text-white">0</span>':''}</button>`).join('')}
+ <button class="btn bg-slate-800 text-slate-400 md:mt-auto" onclick="logout()">Salir</button></aside>
+ <div class="flex-1 min-w-0"><div id="kpis" class="bg-white border-b px-4 py-2 flex flex-wrap gap-3 sticky top-0 z-30"></div><main id="main" class="p-3 max-w-7xl mx-auto"></main></div></div>`;
+ render();kpis();
 }
 window.logout=()=>{S.user=null;try{localStorage.removeItem('pos_user')}catch(e){}unsubs.forEach(x=>x());S.shiftU?.forEach(x=>x());S.subbed=false;loginView()};
 window.go=t=>{S.tab=t;shell()};
 const render=()=>({pos:posView,inv:invView,ent:entView,falt:faltView,cuadre:cuadreView}[S.tab])();
 function refresh(){ // actualiza sin perder el foco de lo que se está escribiendo
- if(!S.user||!$('#main'))return;
+ if(!S.user||!$('#main'))return;kpis();
  if(S.tab==='pos')return renderGrid();
  const a=document.activeElement; if(a&&a.matches('input,select')&&$('#main').contains(a)&&S.tab!=='cuadre')return;
  if(S.tab==='cuadre'&&a&&a.matches('input'))return;
@@ -112,12 +116,12 @@ window.renderGrid=function(){
  const l=S.products.filter(p=>(S.phase==='all'||p.phase===S.phase)&&(!q||norm(p.name).includes(q)||norm(p.code)===q)).slice(0,80);
  g.innerHTML=l.map(p=>`<button onclick="pick('${p.id}')" class="text-left bg-white rounded-xl p-3 shadow border-2 ${p.price<=0?'border-red-500':'border-transparent'} active:scale-95">
  <div class="font-bold leading-tight">${esc(p.name)}</div><div class="text-xs text-stone-500">${esc(p.sub||phName(p.phase))}</div>
- <div class="text-lg font-extrabold text-teal-800">${fmt(p.price)}${isW(p)?'<span class="text-xs font-normal">/kg</span>':''}</div>
+ <div class="text-lg font-extrabold text-teal-800">${isW(p)?fmt(p.price/2)+'<span class="text-xs font-normal">/libra</span>':fmt(p.price)}</div>
  <div class="text-sm">Stock: ${stockTxt(p)}</div><div>${badges(p)}</div></button>`).join('')||'<p class="p-4 text-stone-500">Sin resultados.</p>';
 };
 window.pick=id=>{const p=S.products.find(x=>x.id===id);if(!p)return;
  if(p.price<=0)return toast('Este producto tiene precio $0. Defínelo en Inventario.');
- isW(p)?openW(p):addCart(p,1)};
+ if(p.stock<=0)return toast('Producto agotado');isW(p)?openW(p):addCart(p,1)};
 function addCart(p,qty){
  const i=S.cart.find(x=>x.id===p.id);
  if(i)i.qty+=qty;else S.cart.push({id:p.id,name:p.name,w:isW(p),qty,price:p.price});
@@ -157,35 +161,43 @@ window.pay=async()=>{
 // Modal de pesaje (gramos / libras / kilos / valor en pesos)
 function openW(p){
  $('#modal').innerHTML=`<div class="fixed inset-0 bg-black/60 flex items-center justify-center p-3 z-50"><div class="bg-white rounded-2xl p-5 w-full max-w-md space-y-3">
- <h3 class="text-xl font-extrabold">${esc(p.name)}</h3><p>${fmt(p.price)} por kilo</p>
- <div class="grid grid-cols-3 gap-2">${[[250,'250 g<br>½ libra'],[500,'500 g<br>1 libra'],[1000,'1000 g<br>1 kilo']].map(([g,l])=>`<button class="btn bg-emerald-600 text-white" onclick="addW('${p.id}',${g})">${l}</button>`).join('')}</div>
+ <h3 class="text-xl font-extrabold">${esc(p.name)}</h3><p class="text-sm bg-stone-100 rounded-lg p-2">Libra: <b>${fmt(p.price/2)}</b> · Kilo: <b>${fmt(p.price)}</b></p>
+ <div class="grid grid-cols-4 gap-2">${[[250,'250 g<br>½ libra'],[500,'500 g<br>1 libra'],[1000,'1000 g<br>1 kilo'],[2000,'2000 g<br>2 kilos']].map(([g,l])=>`<button class="btn bg-emerald-600 text-white" onclick="addW('${p.id}',${g})">${l}</button>`).join('')}</div>
  <label class="block">Gramos<input id="wg" type="number" class="inp" oninput="wp.value=Math.round(+this.value*${p.price}/1000);wsum()"></label>
  <label class="block">Valor en pesos ($)<input id="wp" type="number" class="inp" oninput="wg.value=Math.round(+this.value/${p.price}*1000);wsum()"></label>
  <p id="wsum" class="font-bold"></p>
  <div class="flex gap-2"><button class="btn bg-stone-200 flex-1" onclick="closeM()">Cancelar</button><button class="btn bg-stone-900 text-white flex-1" onclick="addW('${p.id}',+wg.value)">Agregar</button></div></div></div>`;
  setTimeout(()=>$('#wp').focus(),50);
 }
-window.wsum=()=>{$('#wsum').textContent=`= ${$('#wg').value||0} g`};
+window.wsum=()=>{$('#wsum').textContent=`${$('#wg').value||0} g = ${fmt(+$('#wp').value||0)}`};
 window.closeM=()=>$('#modal').innerHTML='';
-window.addW=(id,g)=>{if(!g||g<=0)return toast('Ingresa una cantidad');addCart(S.products.find(p=>p.id===id),Math.round(g));closeM()};
+window.addW=(id,g)=>{const p=S.products.find(x=>x.id===id);if(!g||g<=0)return toast('Ingresa una cantidad');if(g>p.stock)return toast('Solo hay '+p.stock+' g en inventario');addCart(p,Math.round(g));closeM()};
 
 // ================= INVENTARIO + IMPORTADOR =================
 function invView(){
  const q=norm(S.fQ);
- const l=S.products.filter(p=>(S.fPhase==='all'||p.phase===S.fPhase)&&(!S.only0||p.price<=0)&&(!q||norm(p.name).includes(q)));
+ const l=S.products.filter(p=>(S.fPhase==='all'||p.phase===S.fPhase)&&(S.fSub==='all'||p.sub===S.fSub)&&(!S.only0||p.price<=0)&&(!q||norm(p.name).includes(q)));
  const cell=(p,f,w)=>`<input class="inp !w-${w}" data-f="${f}" type="number" value="${p[f]??0}" onfocus="this.select()" onchange="setF('${p.id}','${f}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();nextRow(this)}">`;
  $('#main').innerHTML=`<div class="space-y-3">
  <details class="bg-white rounded-2xl shadow p-3"><summary class="font-extrabold cursor-pointer">Importador masivo (pegar lista o subir CSV)</summary>
  <p class="text-sm text-stone-600 my-2">Una línea por producto: <code>Nombre, Fase, Subcategoría, TipoVenta[unidad/gramo], StockInicial, PrecioVenta</code>. Separador: coma, punto y coma o tabulador (puedes pegar directo desde Excel). Para <b>gramo</b>: el stock se escribe en <b>kilos</b> y el precio es <b>por kilo</b>. Precio vacío = $0 (pendiente).</p>
  <textarea id="imp" rows="6" class="inp font-mono text-sm" placeholder="Arroz Diana 500g, Mercado, Arroz, unidad, 24, 3200&#10;Tomate chonto, Fruver, Verduras, gramo, 20, 4000"></textarea>
- <div class="flex gap-2 mt-2 flex-wrap"><input type="file" accept=".csv,.txt" onchange="impFile(this)"><button class="btn bg-teal-700 text-white" onclick="doImport()">Importar</button></div></details>
- <div class="flex gap-2 flex-wrap items-center"><select class="inp !w-auto" onchange="S.fPhase=this.value;invView()"><option value="all">Todas las fases</option>${PHASES.map(p=>`<option value="${p.id}" ${S.fPhase===p.id?'selected':''}>${p.n}</option>`).join('')}</select>
+ <div class="flex gap-2 mt-2 flex-wrap"><input type="file" accept=".csv,.txt" onchange="impFile(this)"><button class="btn bg-teal-700 text-white" onclick="doImport()">Importar</button><button class="btn bg-stone-200" onclick="seed()">Cargar 30 productos de ejemplo</button></div></details>
+ <details class="bg-white rounded-2xl shadow p-3"><summary class="font-extrabold cursor-pointer">+ Nuevo producto</summary><div class="grid sm:grid-cols-3 gap-2 mt-2">
+ <input id="nN" class="inp sm:col-span-3" placeholder="Nombre del producto">
+ <select id="nF" class="inp" onchange="nSubs()">${PHASES.map(p=>`<option value="${p.id}">${p.n}</option>`).join('')}</select>
+ <select id="nS" class="inp">${PHASES[0].subs.map(x=>`<option>${x}</option>`).join('')}</select>
+ <select id="nT" class="inp"><option value="unidad">Por unidad</option><option value="gramo">Por peso (kilos)</option></select>
+ <input id="nK" class="inp" type="number" step="any" placeholder="Stock (en kilos si es por peso)"><input id="nM" class="inp" type="number" step="any" placeholder="Mínimo (kilos si es por peso)"><input id="nP" class="inp" type="number" placeholder="Precio (por kilo si es por peso)"></div>
+ <button class="btn bg-teal-700 text-white mt-2" onclick="addOne()">Guardar producto</button></details>
+ <div class="flex gap-2 flex-wrap items-center"><select class="inp !w-auto" onchange="S.fPhase=this.value;S.fSub='all';invView()"><option value="all">Todas las fases</option>${PHASES.map(p=>`<option value="${p.id}" ${S.fPhase===p.id?'selected':''}>${p.n}</option>`).join('')}</select>
  <input class="inp !w-56" placeholder="Buscar…" value="${esc(S.fQ)}" oninput="S.fQ=this.value;clearTimeout(window._t);window._t=setTimeout(invView,300)">
  <label class="font-bold"><input type="checkbox" ${S.only0?'checked':''} onchange="S.only0=this.checked;invView()"> Solo precio $0 (${S.products.filter(p=>p.price<=0).length})</label></div>
+ ${S.fPhase!=='all'?`<div class="flex gap-2 flex-wrap">${['all',...PHASES.find(f=>f.id===S.fPhase).subs].map(x=>`<button class="btn !py-1 text-sm ${S.fSub===x?'bg-emerald-600 text-white':'bg-white'}" onclick="S.fSub='${x}';invView()">${x==='all'?'Todas':x}</button>`).join('')}</div>`:''}
  <p class="text-sm text-stone-600">Escribe el precio y pulsa <b>Enter</b>: se guarda y pasa al siguiente. Productos por gramo: stock en gramos, precio por kilo.</p>
- <div class="overflow-x-auto bg-white rounded-2xl shadow"><table class="w-full text-left"><thead class="bg-stone-200"><tr><th class="p-2">Producto</th><th>Tipo</th><th>Stock</th><th>Mínimo</th><th>Costo</th><th>Precio</th></tr></thead><tbody>
+ <div class="overflow-x-auto bg-white rounded-2xl shadow"><table class="w-full text-left"><thead class="bg-stone-200"><tr><th class="p-2">Producto</th><th>Tipo</th><th>Stock</th><th>Mínimo</th><th>Costo</th><th>Precio</th><th></th></tr></thead><tbody>
  ${l.slice(0,300).map(p=>`<tr class="border-t ${p.price<=0?'bg-red-50':''}"><td class="p-2"><b>${esc(p.name)}</b><div class="text-xs text-stone-500">${esc(p.sub||phName(p.phase))} ${badges(p)}</div></td>
- <td>${isW(p)?'g':'und'}</td><td>${cell(p,'stock',28)}</td><td>${cell(p,'min',20)}</td><td>${cell(p,'cost',28)}</td><td>${cell(p,'price',28)}</td></tr>`).join('')}
+ <td>${isW(p)?'g':'und'}</td><td>${cell(p,'stock',28)}</td><td>${cell(p,'min',20)}</td><td>${cell(p,'cost',28)}</td><td>${cell(p,'price',28)}</td><td><button class="px-2 text-red-600" onclick="delP('${p.id}')">🗑</button></td></tr>`).join('')}
  </tbody></table></div></div>`;
 }
 window.setF=(id,f,v)=>updateDoc(doc(db,'products',id),{[f]:Math.max(0,+v||0)}).then(()=>toast('Guardado')).catch(e=>toast(e.message));
@@ -209,14 +221,15 @@ window.doImport=async()=>{
 
 // ================= ENTRADAS (COMPRAS) =================
 function entView(){
- $('#main').innerHTML=`<div class="bg-white rounded-2xl shadow p-4 max-w-xl space-y-3"><h2 class="text-xl font-extrabold">Entrada de mercancía</h2>
+ $('#main').innerHTML=`<div class="grid lg:grid-cols-2 gap-3"><div class="bg-white rounded-2xl shadow p-4 space-y-3 h-fit"><h2 class="text-xl font-extrabold">Entrada de mercancía</h2>
  <input id="eP" list="dl" class="inp text-lg" placeholder="Producto…" oninput="eInfo()"><datalist id="dl">${S.products.map(p=>`<option value="${esc(p.name)}">`).join('')}</datalist>
  <p id="eI" class="text-sm text-stone-600"></p>
  <label class="block">Cantidad que llega <span id="eU"></span><input id="eQ" type="number" step="any" class="inp"></label>
  <label class="block">Costo de compra (por unidad o por kilo)<input id="eC" type="number" class="inp"></label>
  <label class="block">Nuevo precio de venta (opcional)<input id="eV" type="number" class="inp"></label>
  <input id="eS" class="inp" placeholder="Proveedor (Bavaria, Postobón, plaza…)">
- <button class="btn bg-emerald-600 text-white w-full" onclick="addEntry()">Registrar entrada</button></div>`;
+ <button class="btn bg-emerald-600 text-white w-full" onclick="addEntry()">Registrar entrada</button></div>
+ <div class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Últimas entradas</h2>${S.entries.map(e=>`<div class="border-b py-1 text-sm"><b>${esc(e.name)}</b> <span class="text-blue-700 font-bold">+${e.w?e.qty/1000+' kg':e.qty+' und'}</span> <span class="text-stone-500">${esc(e.supplier||'')} · ${new Date(e.ts).toLocaleString('es-CO')}</span></div>`).join('')||'<p class="text-stone-500">Aún no hay entradas.</p>'}</div></div>`;
 }
 const eProd=()=>S.products.find(p=>p.name===$('#eP').value);
 window.eInfo=()=>{const p=eProd();$('#eI').textContent=p?`Stock actual: ${stockTxt(p)} · Costo: ${fmt(p.cost)} · Precio: ${fmt(p.price)}`:'';$('#eU').textContent=p?(isW(p)?'(en KILOS)':'(en unidades)'):''};
@@ -225,7 +238,7 @@ window.addEntry=async()=>{
  const add=isW(p)?Math.round(q*1000):q,u={stock:increment(add)};
  if($('#eC').value)u.cost=+$('#eC').value;if($('#eV').value)u.price=+$('#eV').value;
  const b=writeBatch(db);b.update(doc(db,'products',p.id),u);
- b.set(doc(collection(db,'purchases')),{ts:Date.now(),productId:p.id,name:p.name,qty:add,cost:+$('#eC').value||p.cost||0,supplier:$('#eS').value,user:S.user});
+ b.set(doc(collection(db,'purchases')),{ts:Date.now(),productId:p.id,name:p.name,qty:add,w:isW(p),cost:+$('#eC').value||p.cost||0,supplier:$('#eS').value,user:S.user});
  await b.commit();toast('Entrada registrada');entView();
 };
 
@@ -267,7 +280,7 @@ function cuadreView(){
  <hr><h3 class="font-bold">Registrar gasto / salida</h3><input id="gC" class="inp" placeholder="Concepto"><input id="gA" class="inp" type="number" placeholder="Valor $">
  <button class="btn bg-stone-800 text-white w-full" onclick="addGasto()">Guardar gasto</button>
  ${S.expenses.map(e=>`<div class="text-sm">• ${esc(e.concept)}: ${fmt(e.amount)}</div>`).join('')}</section>
- <section class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Historial de cierres</h2>
+ <section class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Ventas del turno</h2><div class="max-h-60 overflow-y-auto mb-4">${[...S.sales].sort((a,b)=>b.ts-a.ts).map(v=>`<div class="text-sm border-b py-1"><b>${new Date(v.ts).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</b> ${v.method}${v.customer?' ('+esc(v.customer)+')':''} · ${esc(v.items.map(i=>i.name+(i.w?' '+i.qty+'g':' ×'+i.qty)).join(', '))} <b class="float-right">${fmt(v.total)}</b></div>`).join('')||'<p class="text-stone-500 text-sm">Sin ventas en este turno.</p>'}</div><h2 class="text-xl font-extrabold mb-2">Historial de cierres</h2>
  ${S.closes.map(c=>`<div class="border-b py-2"><b>${new Date(c.ts).toLocaleString('es-CO')}</b><div class="text-sm">Esperado ${fmt(c.esperado)} · Contado ${fmt(c.contado)} ·
  <span class="${c.diff<0?'text-red-600':'text-emerald-700'} font-bold">${c.diff===0?'Cuadrado':(c.diff<0?'Faltante ':'Sobrante ')+fmt(Math.abs(c.diff))}</span></div></div>`).join('')||'<p>Aún no hay cierres.</p>'}</section></div>`;
  window._esp=esp;upd();
@@ -281,4 +294,49 @@ window.cerrar=async(ef,nq,dv,fi,gs)=>{const c=$('#cnt').value;if(c==='')return t
  if(!confirm('¿Cerrar el turno? Se reinician las ventas del turno.'))return;
  await addDoc(collection(db,'closes'),{ts:Date.now(),base:S.base,efectivo:ef,nequi:nq,daviplata:dv,fiado:fi,gastos:gs,esperado:window._esp,contado:+c,diff:+c-window._esp,user:S.user});
  S.base=0;toast('Turno cerrado')};
+
+function kpis(){const e=$('#kpis');if(!e)return;
+ const v=S.sales.reduce((a,x)=>a+x.total,0),f=S.products.filter(p=>p.stock<=(p.min||0)).length,z=S.products.filter(p=>p.price<=0).length;
+ e.innerHTML=[['Ventas del turno',fmt(v),'emerald'],['Faltan / por agotarse',f+' prod.','amber'],['Precios pendientes',z+' prod.','red']].map(([a,b,c])=>`<div class="rounded-xl border px-3 py-1 bg-${c}-50 border-${c}-200"><div class="text-[11px] font-bold text-${c}-700">${a}</div><div class="text-lg font-extrabold text-${c}-900">${b}</div></div>`).join('');
+ const bf=$('#bFalta');if(bf)bf.textContent=f}
+window.nSubs=()=>{$('#nS').innerHTML=PHASES.find(f=>f.id===$('#nF').value).subs.map(x=>`<option>${x}</option>`).join('')};
+window.addOne=async()=>{const n=$('#nN').value.trim();if(!n)return toast('Escribe el nombre');const w=$('#nT').value==='gramo',k=+$('#nK').value||0,m=+$('#nM').value||0;
+ await addDoc(collection(db,'products'),{name:n,phase:$('#nF').value,sub:$('#nS').value,saleType:w?'gramo':'unidad',stock:Math.round(w?k*1000:k),min:Math.round(w?m*1000:m),cost:0,price:Math.round(+$('#nP').value||0)});
+ toast('Producto guardado');$('#nN').value=''};
+window.delP=id=>{if(confirm('¿Eliminar este producto?'))deleteDoc(doc(db,'products',id)).then(()=>toast('Producto eliminado'))};
+const SEED=`Jabón Rey Azul en Barra|salud|Estantería Aseo Personal|u|24|8|2100|2800
+Crema Dental Colgate 75ml|salud|Estantería Aseo Personal|u|12|5|4200|5500
+Papel Higiénico Familia x4|salud|Papelería / Hogar|u|4|6|6800|8500
+Desodorante Rexona Sobre|salud|Estantería Aseo Personal|u|15|5|1800|0
+Arepa de Chocolo x5|mercado|Arepas y Panadería|u|14|5|3200|4200
+Arepa Tela Blanca x5|mercado|Arepas y Panadería|u|3|6|2000|2800
+Panela Redonda Valluna x2|mercado|Granos y Harinas|u|18|6|3800|4800
+Harina PAN Amarilla 1000g|mercado|Granos y Harinas|u|20|8|3900|4900
+Arroz Diana 500g|mercado|Granos y Harinas|u|35|12|1950|2500
+Toditos Mix 45g|mecato|Góndola Papitas|u|22|8|1900|2500
+Doritos Mega Queso 45g|mecato|Góndola Papitas|u|19|8|1900|2500
+Chocolito Tradicional|mecato|Dulcería y Galletas|u|40|10|1100|1500
+Papas Margarita Pollo 35g|mecato|Góndola Papitas|u|2|8|1700|0
+Gaseosa Manzana Postobón 1.5L|neveras|Nevera Postobón|u|16|6|3400|4500
+Jugo Hit Mango 500ml|neveras|Nevera Postobón|u|20|6|2100|2800
+Coca-Cola 400ml PET|neveras|Nevera Coca-Cola|u|24|10|2200|3000
+Coca-Cola 1.5L Retornable|neveras|Nevera Coca-Cola|u|5|6|3600|4800
+Cerveza Poker Lata 330ml|neveras|Nevera Bavaria (Cerveza)|u|48|18|2300|3200
+Cerveza Águila Original 330ml|neveras|Nevera Bavaria (Cerveza)|u|36|12|2200|3000
+Aguardiente Blanco del Valle 375ml|vitrinas|Vitrina Licores / Alcohol|u|8|3|19500|24000
+Ron Viejo de Caldas 375ml|vitrinas|Vitrina Licores / Alcohol|u|6|3|22000|0
+Queso Campesino Fresco|vitrinas|Vitrina Lácteos / Quesos|g|4500|1500|14000|18000
+Cereal Zucaritas 300g|vitrinas|Estante Cereales|u|7|3|8200|10500
+Pechuga de Pollo|carnes|Congelador Pescados / Pollo|g|8000|2500|13000|16000
+Carne Molida de Res|carnes|Congelador Carnes|g|6000|2000|18000|22000
+Filete de Tilapia|carnes|Congelador Pescados / Pollo|g|3000|1500|16000|0
+Papa Capira Lavada|fruver|Canastillas Fruver (Peso)|g|25000|5000|2000|3000
+Tomate Chonto Maduro|fruver|Canastillas Fruver (Peso)|g|12000|3000|3000|4500
+Cebolla Cabezona Blanca|fruver|Canastillas Fruver (Peso)|g|2200|3000|2500|4000
+Plátano Verde Hartón|fruver|Canastillas Fruver (Peso)|g|10000|3000|2500|0`;
+window.seed=async()=>{if(S.products.length&&!confirm('Ya tienes productos. ¿Agregar también los de ejemplo?'))return;
+ const b=writeBatch(db);SEED.split('\n').forEach(l=>{const [name,phase,sub,t,st,mn,co,pr]=l.split('|');b.set(doc(collection(db,'products')),{name,phase,sub,saleType:t==='g'?'gramo':'unidad',stock:+st,min:+mn,cost:+co,price:+pr})});
+ await b.commit();toast('30 productos de ejemplo cargados (los de precio $0 están marcados en rojo)')};
+// Funciones usadas desde onclick/oninput en el HTML
+Object.assign(window,{$,toast,esc,fmt,invView,faltView,entView,cuadreView,posView,shell});
 </script></body></html>
