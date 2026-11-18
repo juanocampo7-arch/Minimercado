@@ -95,7 +95,7 @@ function start(){
 }
 function shiftSubs(){ // ventas y gastos del turno actual (desde el último cierre)
  S.shiftU?.forEach(x=>x());
- const f=(n,k)=>onSnapshot(query(collection(db,n),where('ts','>',S.since)),s=>{S[k]=s.docs.map(d=>d.data());refresh()});
+ const f=(n,k)=>onSnapshot(query(collection(db,n),where('ts','>',S.since)),s=>{S[k]=s.docs.map(d=>({id:d.id,...d.data()}));refresh()});
  S.shiftU=[f('sales','sales'),f('expenses','expenses')];
 }
 
@@ -206,7 +206,7 @@ function invView(){
  <details class="bg-white rounded-2xl shadow p-3"><summary class="font-extrabold cursor-pointer">Importador masivo (pegar lista o subir CSV)</summary>
  <p class="text-sm text-stone-600 my-2">Una línea por producto: <code>Nombre, Fase, Subcategoría, TipoVenta[unidad/gramo], StockInicial, PrecioVenta</code>. Separador: coma, punto y coma o tabulador (puedes pegar directo desde Excel). Para <b>gramo</b>: el stock se escribe en <b>kilos</b> y el precio es <b>por kilo</b>. Precio vacío = $0 (pendiente).</p>
  <textarea id="imp" rows="6" class="inp font-mono text-sm" placeholder="Arroz Diana 500g, Mercado, Arroz, unidad, 24, 3200&#10;Tomate chonto, Fruver, Verduras, gramo, 20, 4000"></textarea>
- <div class="flex gap-2 mt-2 flex-wrap"><input type="file" accept=".csv,.txt" onchange="impFile(this)"><button class="btn bg-teal-700 text-white" onclick="doImport()">Importar</button><button class="btn bg-stone-200" onclick="seed()">Cargar 30 productos de ejemplo</button></div></details>
+ <div class="flex gap-2 mt-2 flex-wrap"><input type="file" accept=".csv,.txt" onchange="impFile(this)"><button class="btn bg-teal-700 text-white" onclick="doImport()">Importar</button><button class="btn bg-stone-200" onclick="seed()">Cargar productos colombianos de ejemplo</button></div></details>
  <details class="bg-white rounded-2xl shadow p-3"><summary class="font-extrabold cursor-pointer">+ Nuevo producto</summary><div class="grid sm:grid-cols-3 gap-2 mt-2">
  <input id="nN" class="inp sm:col-span-3" placeholder="Nombre del producto">
  <select id="nF" class="inp" onchange="nSubs()">${PHASES.map(p=>`<option value="${p.id}">${p.n}</option>`).join('')}</select>
@@ -289,35 +289,61 @@ function listaTxt(){
 }
 
 // ================= CUADRE DE CAJA =================
+const DEN=[100000,50000,20000,10000,5000,2000,1000,500,200,100,50];
+let CNT={};const cntTot=()=>DEN.reduce((a,d)=>a+d*(+CNT[d]||0),0);
+function shiftStats(){
+ const sm=m=>S.sales.filter(x=>x.method===m).reduce((a,x)=>a+x.total,0);
+ const r={ef:sm('efectivo'),nq:sm('nequi'),dv:sm('daviplata'),fi:sm('fiado'),n:S.sales.length,gs:S.expenses.reduce((a,e)=>a+e.amount,0),util:0,cat:{},top:{},cli:{}};
+ r.tot=r.ef+r.nq+r.dv+r.fi;
+ S.sales.forEach(v=>{if(v.method==='fiado')r.cli[v.customer]=(r.cli[v.customer]||0)+v.total;
+  v.items.forEach(i=>{const p=S.products.find(x=>x.id===i.id);
+   r.util+=i.subtotal-(p?(i.w?i.qty*p.cost/1000:i.qty*p.cost):0);
+   const f=p?.phase||'otro';r.cat[f]=(r.cat[f]||0)+i.subtotal;
+   const t=r.top[i.name]||(r.top[i.name]={q:0,v:0,w:i.w});t.q+=i.qty;t.v+=i.subtotal})});
+ r.esp=S.base+r.ef-r.gs;return r}
 function cuadreView(){
- const sm=m=>S.sales.filter(s=>s.method===m).reduce((a,s)=>a+s.total,0);
- const ef=sm('efectivo'),nq=sm('nequi'),dv=sm('daviplata'),fi=sm('fiado'),gs=S.expenses.reduce((a,e)=>a+e.amount,0);
- const esp=S.base+ef-gs;
- $('#main').innerHTML=`<div class="grid lg:grid-cols-2 gap-3"><section class="bg-white rounded-2xl shadow p-4 space-y-2">
- <h2 class="text-xl font-extrabold">Turno actual</h2>
- <label class="block">Base inicial<input class="inp" type="number" value="${S.base||''}" oninput="S.base=+this.value;upd()"></label>
- <div class="space-y-1 text-lg"><div>Ventas efectivo: <b>${fmt(ef)}</b></div><div>Nequi: <b>${fmt(nq)}</b> · Daviplata: <b>${fmt(dv)}</b></div>
- <div class="text-stone-500">Fiado (no entra al cajón): ${fmt(fi)}</div><div>Gastos/salidas: <b>−${fmt(gs)}</b></div>
- <div class="text-2xl font-extrabold">Esperado en cajón: <span id="esp">${fmt(esp)}</span></div></div>
- <label class="block">Dinero contado<input id="cnt" class="inp text-lg" type="number" oninput="upd()"></label><div id="dif" class="text-xl font-bold"></div>
- <button class="btn bg-emerald-600 text-white w-full" onclick="cerrar(${ef},${nq},${dv},${fi},${gs})">Cerrar turno</button>
- <hr><h3 class="font-bold">Registrar gasto / salida</h3><input id="gC" class="inp" placeholder="Concepto"><input id="gA" class="inp" type="number" placeholder="Valor $">
- <button class="btn bg-stone-800 text-white w-full" onclick="addGasto()">Guardar gasto</button>
- ${S.expenses.map(e=>`<div class="text-sm">• ${esc(e.concept)}: ${fmt(e.amount)}</div>`).join('')}</section>
- <section class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Ventas del turno</h2><div class="max-h-60 overflow-y-auto mb-4">${[...S.sales].sort((a,b)=>b.ts-a.ts).map(v=>`<div class="text-sm border-b py-1"><b>${new Date(v.ts).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</b> ${v.method}${v.customer?' ('+esc(v.customer)+')':''} · ${esc(v.items.map(i=>i.name+(i.w?' '+i.qty+'g':' ×'+i.qty)).join(', '))} <b class="float-right">${fmt(v.total)}</b></div>`).join('')||'<p class="text-stone-500 text-sm">Sin ventas en este turno.</p>'}</div><h2 class="text-xl font-extrabold mb-2">Historial de cierres</h2>
- ${S.closes.map(c=>`<div class="border-b py-2"><b>${new Date(c.ts).toLocaleString('es-CO')}</b><div class="text-sm">Esperado ${fmt(c.esperado)} · Contado ${fmt(c.contado)} ·
- <span class="${c.diff<0?'text-red-600':'text-emerald-700'} font-bold">${c.diff===0?'Cuadrado':(c.diff<0?'Faltante ':'Sobrante ')+fmt(Math.abs(c.diff))}</span></div></div>`).join('')||'<p>Aún no hay cierres.</p>'}</section></div>`;
- window._esp=esp;upd();
+ const r=shiftStats(),cd=(a,b,h)=>`<div class="rounded-xl border p-3 ${h?'bg-emerald-50 border-emerald-200':'bg-stone-100'}"><div class="text-xs text-stone-500">${a}</div><div class="text-lg font-extrabold">${b}</div></div>`;
+ const cats=Object.entries(r.cat).sort((a,b)=>b[1]-a[1]),tops=Object.entries(r.top).sort((a,b)=>b[1].v-a[1].v).slice(0,8),clis=Object.entries(r.cli);
+ const H=t=>`<h2 class="text-xl font-extrabold mb-2">${t}</h2>`,none=t=>`<p class="text-sm text-stone-500">${t}</p>`;
+ $('#main').innerHTML=`<div class="grid lg:grid-cols-2 gap-3"><div class="space-y-3">
+ <section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Resumen del turno')}
+ <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">${cd('Total vendido',fmt(r.tot),1)}${cd('Efectivo',fmt(r.ef))}${cd('Nequi',fmt(r.nq))}${cd('Daviplata',fmt(r.dv))}${cd('Fiado por cobrar',fmt(r.fi))}${cd('Ventas · ticket promedio',r.n+' · '+fmt(r.n?r.tot/r.n:0))}</div>
+ <div class="text-sm text-stone-500">Utilidad estimada (según costos registrados): <b class="text-emerald-700">${fmt(r.util)}</b></div></section>
+ <section class="bg-white rounded-2xl shadow p-4 space-y-3">${H('Arqueo de caja')}
+ <label class="block text-sm">Base inicial<input class="inp" type="number" value="${S.base||''}" oninput="S.base=+this.value;upd()"></label>
+ <div class="text-sm text-stone-500">Base + efectivo (${fmt(r.ef)}) − gastos (${fmt(r.gs)})</div>
+ <div class="text-2xl font-extrabold">Esperado en cajón: <span id="esp">${fmt(r.esp)}</span></div>
+ <details open><summary class="font-bold cursor-pointer">Contar billetes y monedas</summary><div class="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-2">${DEN.map(d=>`<label class="text-xs text-stone-500">${fmt(d)}<input class="inp !py-1" type="number" min="0" value="${CNT[d]||''}" oninput="CNT[${d}]=+this.value;setCnt()"></label>`).join('')}</div></details>
+ <label class="block font-bold">Total contado<input id="cnt" class="inp text-lg" type="number" value="${S.cnt??''}" oninput="S.cnt=this.value;upd()"></label>
+ <div id="dif" class="text-xl font-bold"></div>
+ <input id="nota" class="inp" placeholder="Observación del cierre (opcional)">
+ <div class="grid grid-cols-2 gap-2"><button class="btn bg-emerald-600 text-white" onclick="cerrar()">Cerrar turno</button><button class="btn bg-stone-200" onclick="resumen()">Copiar resumen</button></div></section>
+ <section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Gastos / salidas de caja')}
+ <input id="gC" class="inp" placeholder="Concepto (domiciliario, hielo, proveedor…)"><input id="gA" class="inp" type="number" placeholder="Valor $">
+ <button class="btn bg-slate-700 text-white w-full" onclick="addGasto()">Guardar gasto</button>
+ ${S.expenses.map(e=>`<div class="flex justify-between text-sm border-b py-1"><span>${esc(e.concept)}</span><span>${fmt(e.amount)} <button class="text-red-600 px-1" onclick="delG('${e.id}')">✕</button></span></div>`).join('')}</section></div>
+ <div class="space-y-3">
+ <section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Ventas por fase')}${cats.map(([k,v])=>`<div class="text-sm"><div class="flex justify-between"><span>${esc(phName(k))}</span><b>${fmt(v)}</b></div><div class="h-2 rounded bg-slate-700"><div class="h-2 rounded bg-emerald-500" style="width:${Math.round(v/(r.tot||1)*100)}%"></div></div></div>`).join('')||none('Sin ventas en este turno.')}</section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Más vendidos')}${tops.map(([n,t])=>`<div class="flex justify-between text-sm border-b py-1"><span>${esc(n)} <span class="text-stone-500">${t.w?(t.q/1000).toFixed(2)+' kg':t.q+' und'}</span></span><b>${fmt(t.v)}</b></div>`).join('')||none('Aún no hay datos.')}</section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Fiados del turno')}${clis.map(([c,v])=>`<div class="flex justify-between text-sm border-b py-1"><span>${esc(c)}</span><b>${fmt(v)}</b></div>`).join('')||none('Sin fiados.')}</section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Ventas del turno')}<div class="max-h-60 overflow-y-auto">${[...S.sales].sort((a,b)=>b.ts-a.ts).map(v=>`<div class="text-sm border-b py-1"><b>${new Date(v.ts).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</b> ${v.method}${v.customer?' ('+esc(v.customer)+')':''} · ${esc(v.items.map(i=>i.name+(i.w?' '+i.qty+'g':' ×'+i.qty)).join(', '))} <b class="float-right">${fmt(v.total)}</b></div>`).join('')||none('Sin ventas.')}</div></section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Historial de cierres')}${S.closes.map(c=>`<div class="border-b py-2 text-sm"><b>${new Date(c.ts).toLocaleString('es-CO')}</b>${c.nVentas!=null?' · '+c.nVentas+' ventas':''}<div>Efectivo ${fmt(c.efectivo)} · Digital ${fmt((c.nequi||0)+(c.daviplata||0))} · Fiado ${fmt(c.fiado||0)} · Gastos ${fmt(c.gastos||0)}</div><div>Esperado ${fmt(c.esperado)} · Contado ${fmt(c.contado)} · <b class="${c.diff<0?'text-red-600':'text-emerald-700'}">${c.diff===0?'Cuadrado':(c.diff<0?'Faltante ':'Sobrante ')+fmt(Math.abs(c.diff))}</b></div>${c.nota?`<div class="text-stone-500">📝 ${esc(c.nota)}</div>`:''}</div>`).join('')||none('Aún no hay cierres.')}</section></div></div>`;
+ upd();
 }
-window.upd=()=>{const ef=S.sales.filter(s=>s.method==='efectivo').reduce((a,s)=>a+s.total,0),gs=S.expenses.reduce((a,e)=>a+e.amount,0);
- window._esp=S.base+ef-gs;const e=$('#esp');if(e)e.textContent=fmt(window._esp);const c=$('#cnt');if(!c||c.value==='')return $('#dif')&&($('#dif').textContent='');
- const d=+c.value-window._esp;$('#dif').innerHTML=d===0?'✅ Cuadrado':`<span style="color:${d<0?'#f87171':'#34d399'}">${d<0?'Faltante ':'Sobrante '}${fmt(Math.abs(d))}</span>`};
+window.upd=()=>{const r=shiftStats(),e=$('#esp');if(e)e.textContent=fmt(r.esp);const c=$('#cnt'),d=$('#dif');if(!c||!d)return;
+ if(c.value==='')return d.textContent='';const x=+c.value-r.esp;
+ d.innerHTML=x===0?'✅ Caja cuadrada':`<span style="color:${x<0?'#f87171':'#34d399'}">${x<0?'Faltante ':'Sobrante '}${fmt(Math.abs(x))}</span>`};
+window.setCnt=()=>{S.cnt=String(cntTot()||'');const c=$('#cnt');if(c)c.value=S.cnt;upd()};
 window.addGasto=async()=>{const a=+$('#gA').value;if(!a||!$('#gC').value)return toast('Completa concepto y valor');
  await addDoc(collection(db,'expenses'),{ts:Date.now(),concept:$('#gC').value,amount:a,user:S.user});toast('Gasto guardado')};
-window.cerrar=async(ef,nq,dv,fi,gs)=>{const c=$('#cnt').value;if(c==='')return toast('Ingresa el dinero contado');
- if(!confirm('¿Cerrar el turno? Se reinician las ventas del turno.'))return;
- await addDoc(collection(db,'closes'),{ts:Date.now(),base:S.base,efectivo:ef,nequi:nq,daviplata:dv,fiado:fi,gastos:gs,esperado:window._esp,contado:+c,diff:+c-window._esp,user:S.user});
- S.base=0;toast('Turno cerrado')};
+window.delG=id=>deleteDoc(doc(db,'expenses',id));
+window.resumen=()=>{const r=shiftStats(),c=+$('#cnt').value||0;
+ const t=`*CIERRE DE CAJA ${new Date().toLocaleString('es-CO')}*\nVentas: ${r.n} · Total ${fmt(r.tot)}\nEfectivo: ${fmt(r.ef)}\nNequi: ${fmt(r.nq)}\nDaviplata: ${fmt(r.dv)}\nFiado: ${fmt(r.fi)}\nGastos: ${fmt(r.gs)}\nBase: ${fmt(S.base)}\nEsperado en cajón: ${fmt(r.esp)}\nContado: ${fmt(c)}\nDiferencia: ${fmt(c-r.esp)}`;
+ navigator.clipboard.writeText(t).then(()=>toast('Resumen copiado, pégalo en WhatsApp'))};
+window.cerrar=async()=>{const r=shiftStats(),c=$('#cnt').value;if(c==='')return toast('Ingresa el dinero contado');
+ if(!confirm('¿Cerrar el turno? Se reinician las ventas y gastos del turno.'))return;
+ await addDoc(collection(db,'closes'),{ts:Date.now(),base:S.base,efectivo:r.ef,nequi:r.nq,daviplata:r.dv,fiado:r.fi,gastos:r.gs,nVentas:r.n,utilidad:Math.round(r.util),esperado:r.esp,contado:+c,diff:+c-r.esp,nota:$('#nota').value||'',user:S.user});
+ S.base=0;S.cnt='';CNT={};toast('Turno cerrado')};
 
 function kpis(){const e=$('#kpis');if(!e)return;
  const v=S.sales.reduce((a,x)=>a+x.total,0),f=S.products.filter(p=>p.stock<=(p.min||0)).length,z=S.products.filter(p=>p.price<=0).length;
@@ -328,39 +354,194 @@ window.addOne=async()=>{const n=$('#nN').value.trim();if(!n)return toast('Escrib
  await addDoc(collection(db,'products'),{name:n,phase:$('#nF').value,sub:$('#nS').value,saleType:w?'gramo':'unidad',stock:Math.round(w?k*1000:k),min:Math.round(w?m*1000:m),cost:0,price:Math.round(+$('#nP').value||0)});
  toast('Producto guardado');$('#nN').value=''};
 window.delP=id=>{if(confirm('¿Eliminar este producto?'))deleteDoc(doc(db,'products',id)).then(()=>toast('Producto eliminado'))};
-const SEED=`Jabón Rey Azul en Barra|salud|Estantería Aseo Personal|u|24|8|2100|2800
-Crema Dental Colgate 75ml|salud|Estantería Aseo Personal|u|12|5|4200|5500
-Papel Higiénico Familia x4|salud|Papelería / Hogar|u|4|6|6800|8500
-Desodorante Rexona Sobre|salud|Estantería Aseo Personal|u|15|5|1800|0
-Arepa de Chocolo x5|mercado|Arepas y Panadería|u|14|5|3200|4200
-Arepa Tela Blanca x5|mercado|Arepas y Panadería|u|3|6|2000|2800
-Panela Redonda Valluna x2|mercado|Granos y Harinas|u|18|6|3800|4800
-Harina PAN Amarilla 1000g|mercado|Granos y Harinas|u|20|8|3900|4900
-Arroz Diana 500g|mercado|Granos y Harinas|u|35|12|1950|2500
-Toditos Mix 45g|mecato|Góndola Papitas|u|22|8|1900|2500
-Doritos Mega Queso 45g|mecato|Góndola Papitas|u|19|8|1900|2500
-Chocolito Tradicional|mecato|Dulcería y Galletas|u|40|10|1100|1500
-Papas Margarita Pollo 35g|mecato|Góndola Papitas|u|2|8|1700|0
-Gaseosa Manzana Postobón 1.5L|neveras|Nevera Postobón|u|16|6|3400|4500
-Jugo Hit Mango 500ml|neveras|Nevera Postobón|u|20|6|2100|2800
-Coca-Cola 400ml PET|neveras|Nevera Coca-Cola|u|24|10|2200|3000
-Coca-Cola 1.5L Retornable|neveras|Nevera Coca-Cola|u|5|6|3600|4800
-Cerveza Poker Lata 330ml|neveras|Nevera Bavaria (Cerveza)|u|48|18|2300|3200
-Cerveza Águila Original 330ml|neveras|Nevera Bavaria (Cerveza)|u|36|12|2200|3000
-Aguardiente Blanco del Valle 375ml|vitrinas|Vitrina Licores / Alcohol|u|8|3|19500|24000
-Ron Viejo de Caldas 375ml|vitrinas|Vitrina Licores / Alcohol|u|6|3|22000|0
-Queso Campesino Fresco|vitrinas|Vitrina Lácteos / Quesos|g|4500|1500|14000|18000
-Cereal Zucaritas 300g|vitrinas|Estante Cereales|u|7|3|8200|10500
-Pechuga de Pollo|carnes|Congelador Pescados / Pollo|g|8000|2500|13000|16000
-Carne Molida de Res|carnes|Congelador Carnes|g|6000|2000|18000|22000
-Filete de Tilapia|carnes|Congelador Pescados / Pollo|g|3000|1500|16000|0
-Papa Capira Lavada|fruver|Canastillas Fruver (Peso)|g|25000|5000|2000|3000
-Tomate Chonto Maduro|fruver|Canastillas Fruver (Peso)|g|12000|3000|3000|4500
-Cebolla Cabezona Blanca|fruver|Canastillas Fruver (Peso)|g|2200|3000|2500|4000
-Plátano Verde Hartón|fruver|Canastillas Fruver (Peso)|g|10000|3000|2500|0`;
-window.seed=async()=>{if(S.products.length&&!confirm('Ya tienes productos. ¿Agregar también los de ejemplo?'))return;
- const b=writeBatch(db);SEED.split('\n').forEach(l=>{const [name,phase,sub,t,st,mn,co,pr]=l.split('|');b.set(doc(collection(db,'products')),{name,phase,sub,saleType:t==='g'?'gramo':'unidad',stock:+st,min:+mn,cost:+co,price:+pr})});
- await b.commit();toast('30 productos de ejemplo cargados (los de precio $0 están marcados en rojo)')};
+const SEED=`#salud|Estantería Aseo Personal
+Jabón Rey Azul en Barra|u|24|8|2100|2800
+Jabón Protex Avena 110g|u|18|6|3600|4800
+Shampoo Savital Sachet|u|30|10|700|1000
+Shampoo Head & Shoulders 180ml|u|8|3|12500|15500
+Crema Dental Colgate Triple Acción 75ml|u|12|5|4200|5500
+Cepillo Dental Colgate|u|15|5|2500|3500
+Desodorante Rexona Sobre|u|15|5|1800|0
+Desodorante Speed Stick Barra|u|6|3|9800|12500
+Toallas Higiénicas Nosotras x10|u|14|5|3600|4800
+Afeitadora Bic Desechable|u|20|6|1400|2000
+#salud|Papelería / Hogar
+Papel Higiénico Familia x4|u|4|6|6800|8500
+Papel Higiénico Familia x12|u|6|3|17500|21500
+Servilletas Familia x100|u|12|4|2600|3500
+Toalla de Cocina Familia|u|10|4|3800|5000
+Pañales Huggies Etapa 3 x20|u|6|3|24000|29500
+Pañales Pequeñín Etapa 4 x16|u|5|3|15500|19500
+Pañitos Húmedos Huggies x48|u|6|3|8200|10500
+Detergente Fab en Polvo 500g|u|14|6|4800|6200
+Límpido Blanqueador 500ml|u|10|4|2500|3300
+Lavaplatos Axion Crema 235g|u|12|5|3400|4500
+Suavizante Suavitel 400ml|u|7|3|5200|6800
+Fósforos Olímpica|u|20|8|700|1000
+Bolsas de Basura x10|u|10|4|2800|3800
+#mercado|Granos y Harinas
+Arroz Diana 500g|u|35|12|1950|2500
+Arroz Roa 1000g|u|20|8|4300|5400
+Harina PAN Amarilla 1000g|u|20|8|3900|4900
+Harina PAN Blanca 1000g|u|20|8|3900|4900
+Harina de Trigo Haz de Oros 500g|u|10|4|2300|3000
+Maizena Duryea 300g|u|8|3|3600|4700
+Lentejas Diana 500g|u|10|4|3500|4500
+Fríjol Cargamanto Rojo 500g|u|12|4|5800|7300
+Garbanzo Diana 500g|u|8|3|4200|5400
+Arveja Seca 500g|u|8|3|3500|4500
+Azúcar Manuelita 1000g|u|25|10|3600|4500
+Azúcar Incauca 500g|u|12|6|1900|2500
+Sal Refisal 500g|u|20|8|1100|1600
+Panela Redonda Valluna x2|u|18|6|3800|4800
+Panela Pulverizada 500g|u|8|3|3000|3900
+Café Sello Rojo 250g|u|15|6|6500|8300
+Café Águila Roja 250g|u|10|5|7200|9200
+Chocolate Corona Barra 250g|u|12|5|6200|8000
+Milo Tarro 400g|u|5|3|15500|19500
+Avena Quaker Hojuelas 400g|u|8|3|4700|6200
+Pasta Doria Espagueti 250g|u|25|10|1900|2500
+Pasta Doria Coditos 250g|u|15|6|1900|2500
+#mercado|Arepas y Panadería
+Arepa de Chocolo x5|u|14|5|3200|4200
+Arepa Tela Blanca x5|u|3|6|2000|2800
+Arepa de Queso x5|u|8|4|4200|5500
+Pan Tajado Bimbo Grande|u|10|4|6200|7800
+Pan Hamburguesa Bimbo x4|u|8|3|4300|5500
+#mercado|Aceites y Enlatados
+Aceite Premier 1000ml|u|12|5|9300|11500
+Aceite Gourmet 500ml|u|10|4|6200|7800
+Atún Van Camps Lata 160g|u|18|6|5200|6700
+Sardinas Van Camps Salsa Tomate|u|14|5|3400|4500
+Salsa de Tomate Fruco 400g|u|10|4|4800|6200
+Mayonesa Fruco 200g|u|8|4|3300|4400
+Mostaza Fruco 200g|u|8|3|2700|3600
+Caldo Maggi Gallina Cubo|u|40|15|450|700
+#mecato|Góndola Papitas
+Toditos Mix Original 45g|u|22|8|1900|2500
+Doritos Mega Queso 45g|u|19|8|1900|2500
+Detodito Picante 45g|u|20|6|1900|2500
+Papas Margarita Pollo 35g|u|2|8|1700|0
+Papas Margarita Limón 35g|u|15|6|1700|2300
+Chitos Queso 30g|u|24|8|1100|1600
+Platanitos Margarita 40g|u|18|6|1500|2100
+Cheese Tris 35g|u|18|6|1200|1700
+Maní Moto Salado 45g|u|20|6|1300|1800
+#mecato|Dulcería y Galletas
+Chocolito Tradicional|u|40|10|1100|1500
+Chocolisto Original 250g|u|8|4|6800|8500
+Galletas Festival Fresa|u|24|6|1500|2000
+Galletas Saltín Noel|u|15|6|1800|2500
+Galletas Oreo x4|u|20|8|1500|2000
+Galletas Ducales|u|12|5|1700|2300
+Chocolatina Jet Pequeña|u|60|20|450|700
+Bon Bon Bum Unidad|u|150|50|180|300
+Ponqué Ramo Gala|u|18|6|1500|2000
+Chicle Trident Menta|u|20|8|1100|1600
+Gomitas Trululú|u|30|10|700|1000
+#neveras|Nevera Postobón
+Gaseosa Manzana Postobón 1.5L|u|16|6|3400|4500
+Gaseosa Colombiana Postobón 1.5L|u|14|5|3400|4500
+Gaseosa Uva Postobón 400ml|u|20|8|1900|2500
+Pepsi 1.5L|u|12|5|3500|4600
+Jugo Hit Mango 500ml|u|20|6|2100|2800
+Jugo Hit Naranja 500ml|u|16|6|2100|2800
+Té Hatsu Durazno 500ml|u|12|5|2500|3300
+Pony Malta 330ml|u|20|8|1900|2500
+Agua Cristal 600ml|u|30|12|1000|1700
+#neveras|Nevera Coca-Cola
+Coca-Cola Original 400ml PET|u|24|10|2200|3000
+Coca-Cola 1.5L Retornable|u|5|6|3600|4800
+Coca-Cola Zero 400ml|u|12|5|2200|3000
+Sprite 400ml|u|12|5|2200|3000
+Quatro 1.5L|u|8|4|3600|4800
+Agua Brisa 600ml|u|24|10|1000|1700
+Del Valle Naranja 250ml|u|15|6|1700|2400
+Powerade Azul 500ml|u|10|4|2800|3800
+#neveras|Nevera Bavaria (Cerveza)
+Cerveza Poker Lata 330ml|u|48|18|2300|3200
+Cerveza Águila Original 330ml|u|36|12|2200|3000
+Cerveza Águila Light Lata|u|24|12|2300|3200
+Cerveza Club Colombia Dorada|u|24|12|2800|3800
+Cerveza Costeña Bacana Lata|u|36|12|2100|3000
+Malta Leona 330ml|u|24|10|1900|2600
+#vitrinas|Vitrina Licores / Alcohol
+Aguardiente Blanco del Valle Media 375ml|u|8|3|19500|24000
+Aguardiente Antioqueño Verde Media|u|10|4|23500|28000
+Aguardiente Néctar Verde Media|u|8|3|21500|26000
+Aguardiente Amarillo de Manzanares Media|u|6|3|22000|26500
+Ron Viejo de Caldas Media 375ml|u|6|3|22000|0
+Ron Medellín Añejo Media|u|5|2|27000|33000
+Vino Gato Negro 750ml|u|4|2|24000|30000
+#vitrinas|Vitrina Lácteos / Quesos
+Queso Campesino Fresco|g|4500|1500|14000|18000
+Queso Doble Crema|g|3000|1000|24000|30000
+Queso Costeño Blando|g|3000|1000|20000|25000
+Leche Colanta Entera Bolsa 900ml|u|30|12|4000|4800
+Leche Deslactosada Alpina 1L|u|10|4|5600|7000
+Yogurt Alpina Fresa 150g|u|16|6|2300|3000
+Crema de Leche Alpina 200g|u|8|3|3600|4700
+Mantequilla Alpina 250g|u|8|3|6800|8600
+Leche en Polvo Klim 380g|u|6|3|14500|18000
+Huevo Rojo AA Unidad|u|120|30|500|700
+#vitrinas|Estante Cereales
+Cereal Zucaritas 300g|u|7|3|8200|10500
+Corn Flakes Kellogg's 300g|u|6|3|9000|11500
+#carnes|Congelador Carnes
+Carne Molida de Res|g|6000|2000|18000|22000
+Bistec de Res|g|5000|2000|24000|29000
+Costilla de Cerdo|g|4000|1500|17000|21000
+Chorizo Antioqueño Unidad|u|30|10|1800|2500
+Mortadela Zenú 250g|u|8|3|4200|5500
+Salchicha Ranchera Zenú|u|10|4|4800|6200
+Jamón Zenú 250g|u|8|3|7000|9000
+#carnes|Congelador Pescados / Pollo
+Pechuga de Pollo|g|8000|2500|13000|16000
+Muslo y Contramuslo de Pollo|g|6000|2000|9000|12000
+Alas de Pollo|g|3000|1000|8500|11000
+Filete de Tilapia|g|3000|1500|16000|0
+Mojarra Roja Entera|u|8|3|10500|13000
+#fruver|Canastillas Fruver (Peso)
+Papa Capira Lavada|g|25000|5000|2000|3000
+Papa Pastusa|g|20000|5000|2200|3200
+Papa Criolla|g|8000|2000|3500|5000
+Yuca|g|10000|3000|1800|2800
+Plátano Verde Hartón|g|10000|3000|2500|0
+Plátano Maduro|g|8000|3000|2800|3800
+Banano|g|10000|3000|2200|3200
+Tomate Chonto Maduro|g|12000|3000|3000|4500
+Cebolla Cabezona Blanca|g|2200|3000|2500|4000
+Cebolla Larga Junca|g|5000|1500|3200|4500
+Zanahoria|g|8000|2000|1800|2800
+Ajo Cabeza|g|1500|500|14000|18000
+Pimentón Rojo|g|3000|1000|5500|7500
+Limón Tahití|g|6000|2000|3500|5000
+Aguacate Hass|g|6000|2000|8000|11000
+Mango Tommy|g|5000|1500|4500|6500
+Naranja|g|10000|3000|1800|2800
+Mandarina|g|5000|1500|2800|4000
+Papaya|g|6000|2000|2200|3200
+Piña|g|8000|3000|2000|3000
+Maracuyá|g|3000|1000|5500|8000
+Lulo|g|3000|1000|6500|9000
+Mora|g|2500|1000|8000|11000
+Tomate de Árbol|g|3000|1000|4500|6500
+Guayaba|g|3000|1000|3000|4500
+Habichuela|g|3000|1000|3500|5000
+Repollo|g|5000|1500|1600|2500
+Remolacha|g|3000|1000|2000|3000
+Ahuyama|g|5000|1500|1500|2400
+Fresa|g|2000|700|9000|13000
+Mazorca Unidad|u|20|8|1200|1800`;
+window.seed=async()=>{
+ if(S.products.length&&!confirm('Se agregarán los productos de ejemplo que aún no tengas. ¿Continuar?'))return;
+ const have=new Set(S.products.map(p=>norm(p.name)));let b=writeBatch(db),ph,sb,n=0;
+ for(const l of SEED.split('\n')){
+  if(l[0]==='#'){[ph,sb]=l.slice(1).split('|');continue}
+  const [name,t,st,mn,co,pr]=l.split('|');if(have.has(norm(name)))continue;
+  b.set(doc(collection(db,'products')),{name,phase:ph,sub:sb,saleType:t==='g'?'gramo':'unidad',stock:+st,min:+mn,cost:+co,price:+pr});n++}
+ if(!n)return toast('Ya tienes todos los productos de ejemplo');
+ await b.commit();toast(n+' productos colombianos cargados (los de precio $0 salen en rojo)')};
 // Funciones usadas desde onclick/oninput en el HTML
 Object.assign(window,{$,toast,esc,fmt,invView,faltView,entView,cuadreView,posView,shell});
 addEventListener('beforeinstallprompt',e=>{e.preventDefault();window._dp=e;$('#inst')?.classList.remove('hidden')});
