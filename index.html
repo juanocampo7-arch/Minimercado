@@ -40,7 +40,7 @@ body{padding-bottom:env(safe-area-inset-bottom)}
 <div id="app"></div><div id="modal"></div><div id="toast" class="fixed bottom-28 md:bottom-4 left-1/2 -translate-x-1/2 z-[60]"></div>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,onSnapshot,addDoc,updateDoc,setDoc,deleteDoc,writeBatch,increment,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,onSnapshot,getDocs,addDoc,updateDoc,setDoc,deleteDoc,writeBatch,increment,query,where,orderBy,limit} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /* ========== PEGA AQUÍ TUS CREDENCIALES DE FIREBASE ========== */
 const firebaseConfig = {
@@ -75,7 +75,7 @@ const findPhase=s=>{s=norm(s);return PHASES.find(p=>p.id===s||norm(p.n).startsWi
 const isW=p=>p.saleType==='gramo';
 const stockTxt=p=>isW(p)?(p.stock/1000).toFixed(2)+' kg':p.stock;
 
-let S={biz:{},entries:[],fSub:'all',user:null,tab:'pos',products:[],sales:[],expenses:[],closes:[],since:0,subbed:false,
+let S={rp:{p:'semana'},biz:{},entries:[],fSub:'all',user:null,tab:'pos',products:[],sales:[],expenses:[],closes:[],since:0,subbed:false,
  cart:[],phase:'all',q:'',method:'efectivo',paid:0,cust:'',base:0,fPhase:'all',fQ:'',only0:false,audPhase:'mercado'};
 let unsubs=[];
 
@@ -91,7 +91,7 @@ function start(){
  const col=(n,fn,q)=>onSnapshot(q||collection(db,n),s=>{fn(s.docs.map(d=>({id:d.id,...d.data()})));refresh()});
  unsubs.forEach(x=>x());
  unsubs=[col('products',a=>S.products=a.sort((x,y)=>x.name.localeCompare(y.name)))];
- unsubs.push(onSnapshot(query(collection(db,'purchases'),orderBy('ts','desc'),limit(15)),q=>{S.entries=q.docs.map(d=>d.data());refresh()}));
+ unsubs.push(onSnapshot(query(collection(db,'purchases'),orderBy('ts','desc'),limit(15)),q=>{S.entries=q.docs.map(d=>({id:d.id,...d.data()}));refresh()}));
  unsubs.push(onSnapshot(doc(db,'config','negocio'),d=>{S.biz=d.data()||{};refresh()}));
  unsubs.push(onSnapshot(query(collection(db,'closes'),orderBy('ts','desc'),limit(30)),s=>{
   S.closes=s.docs.map(d=>({id:d.id,...d.data()}));const since=S.closes[0]?.ts||0;
@@ -174,6 +174,7 @@ function renderCart(){
  `<button class="btn ${S.method===k?'bg-teal-700 text-white':'bg-stone-200'}" onclick="S.method='${k}';renderCart()">${l}</button>`).join('')}</div>
  ${S.method==='efectivo'?`<div class="flex gap-1 flex-wrap">${[['Exacto',t],['10 mil',10000],['20 mil',20000],['50 mil',50000],['100 mil',100000]].map(([l,v])=>`<button class="btn bg-stone-200 !py-1 !px-2 text-sm" onclick="S.paid=${v};renderCart()">${l}</button>`).join('')}</div><input class="inp text-lg" type="number" placeholder="Recibido $" value="${S.paid||''}" oninput="S.paid=+this.value;chg()"><div class="text-xl font-bold">Devuelta: <span id="chg"></span></div>`:''}
  ${S.method==='fiado'?`<input class="inp" placeholder="Nombre del cliente" value="${esc(S.cust)}" oninput="S.cust=this.value">`:''}
+ <label class="flex items-center gap-2 font-bold py-1"><input type="checkbox" class="w-5 h-5" ${(S.fact??S.biz.auto!==false)?'checked':''} onchange="S.fact=this.checked"> 🧾 Factura al cobrar</label>
  <button class="btn bg-emerald-600 text-white w-full text-xl" onclick="pay()">Cobrar ${fmt(t)}</button>
  <button class="btn bg-stone-200 w-full" onclick="S.cart=[];renderCart()">Vaciar</button>`;
  chg();const mb=$('#mbar');if(mb){mb.classList.toggle('hidden',!S.cart.length);mb.textContent='🛒 '+S.cart.length+' · '+fmt(t)}
@@ -193,7 +194,7 @@ window.pay=()=>{
  b.set(doc(collection(db,'sales')),v);b.set(doc(db,'config','negocio'),{consec:increment(1)},{merge:true});
  b.commit().catch(e=>toast('Error al guardar: '+e.message));
  S.cart=[];S.paid=0;S.cust='';S.busy=false;renderCart();
- S.biz.auto===false?toast('Venta registrada '+fmt(t)):showFact(v);
+ (S.fact??S.biz.auto!==false)?showFact(v):toast('Venta registrada '+fmt(t));
 };
 // Modal de pesaje (gramos / libras / kilos / valor en pesos)
 function openW(p){
@@ -287,18 +288,21 @@ function entView(){
  <label class="block">Costo de compra (por unidad o por kilo)<input id="eC" type="number" class="inp"></label>
  <label class="block">Nuevo precio de venta (opcional)<input id="eV" type="number" class="inp"></label>
  <input id="eS" class="inp" placeholder="Proveedor (Bavaria, Postobón, plaza…)">
+ <label class="flex items-center gap-2 text-sm font-bold"><input id="ePaid" type="checkbox" class="w-5 h-5"> Pagado con dinero de la caja (se resta en el cuadre)</label>
  <button class="btn bg-emerald-600 text-white w-full" onclick="addEntry()">Registrar entrada</button></div>
- <div class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Últimas entradas</h2>${S.entries.map(e=>`<div class="border-b py-1 text-sm"><b>${esc(e.name)}</b> <span class="text-blue-700 font-bold">+${e.w?e.qty/1000+' kg':e.qty+' und'}</span> <span class="text-stone-500">${esc(e.supplier||'')} · ${new Date(e.ts).toLocaleString('es-CO')}</span></div>`).join('')||'<p class="text-stone-500">Aún no hay entradas.</p>'}</div></div>`;
+ <div class="bg-white rounded-2xl shadow p-4"><h2 class="text-xl font-extrabold mb-2">Últimas entradas</h2>${S.entries.map(e=>`<div class="border-b py-1 text-sm"><b>${esc(e.name)}</b> <span class="text-blue-700 font-bold">+${e.w?e.qty/1000+' kg':e.qty+' und'}</span> <span class="text-stone-500">${esc(e.supplier||'')} · ${new Date(e.ts).toLocaleString('es-CO')}${e.total?' · '+fmt(e.total):''}</span> <button class="text-red-500 px-1" onclick="delCompra('${e.id}')">🗑</button></div>`).join('')||'<p class="text-stone-500">Aún no hay entradas.</p>'}</div></div>`;
 }
 const eProd=()=>S.products.find(p=>p.name===$('#eP').value);
 window.eInfo=()=>{const p=eProd();$('#eI').textContent=p?`Stock actual: ${stockTxt(p)} · Costo: ${fmt(p.cost)} · Precio: ${fmt(p.price)}`:'';$('#eU').textContent=p?(isW(p)?'(en KILOS)':'(en unidades)'):''};
-window.addEntry=async()=>{
+window.addEntry=()=>{
  const p=eProd(),q=+$('#eQ').value;if(!p||!q)return toast('Elige producto y cantidad');
- const add=isW(p)?Math.round(q*1000):q,u={stock:increment(add)};
+ const add=isW(p)?Math.round(q*1000):q,u={stock:increment(add)},cost=+$('#eC').value||p.cost||0,paid=$('#ePaid').checked;
  if($('#eC').value)u.cost=+$('#eC').value;if($('#eV').value)u.price=+$('#eV').value;
- const b=writeBatch(db);b.update(doc(db,'products',p.id),u);
- b.set(doc(collection(db,'purchases')),{ts:Date.now(),productId:p.id,name:p.name,qty:add,w:isW(p),cost:+$('#eC').value||p.cost||0,supplier:$('#eS').value,user:S.user});
- await b.commit();toast('Entrada registrada');entView();
+ const b=writeBatch(db),ref=doc(collection(db,'purchases')),tot=Math.round(q*cost);
+ b.update(doc(db,'products',p.id),u);
+ b.set(ref,{ts:Date.now(),productId:p.id,name:p.name,qty:add,w:isW(p),cost,total:tot,supplier:$('#eS').value,paidCash:paid,user:S.user});
+ if(paid&&tot>0)b.set(doc(collection(db,'expenses')),{ts:Date.now(),concept:'Compra: '+p.name,amount:tot,purchaseId:ref.id,user:S.user});
+ b.commit().catch(x=>toast(x.message));toast('Entrada registrada');entView();
 };
 
 // ================= VERIFICACIÓN Y FALTANTES =================
@@ -336,11 +340,11 @@ function shiftStats(){
    const f=p?.phase||'otro';r.cat[f]=(r.cat[f]||0)+i.subtotal;
    const t=r.top[i.name]||(r.top[i.name]={q:0,v:0,w:i.w});t.q+=i.qty;t.v+=i.subtotal})});
  r.esp=S.base+r.ef-r.gs;return r}
-function cuadreView(){
+function turnoView(){
  const r=shiftStats(),cd=(a,b,h)=>`<div class="rounded-xl border p-3 ${h?'bg-emerald-50 border-emerald-200':'bg-stone-100'}"><div class="text-xs text-stone-500">${a}</div><div class="text-lg font-extrabold">${b}</div></div>`;
  const cats=Object.entries(r.cat).sort((a,b)=>b[1]-a[1]),tops=Object.entries(r.top).sort((a,b)=>b[1].v-a[1].v).slice(0,8),clis=Object.entries(r.cli);
  const H=t=>`<h2 class="text-xl font-extrabold mb-2">${t}</h2>`,none=t=>`<p class="text-sm text-stone-500">${t}</p>`;
- $('#main').innerHTML=`<div class="grid lg:grid-cols-2 gap-3"><div class="space-y-3">
+ $('#main').innerHTML=seg()+`<div class="grid lg:grid-cols-2 gap-3"><div class="space-y-3">
  <section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Resumen del turno')}
  <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">${cd('Total vendido',fmt(r.tot),1)}${cd('Efectivo',fmt(r.ef))}${cd('Nequi',fmt(r.nq))}${cd('Daviplata',fmt(r.dv))}${cd('Fiado por cobrar',fmt(r.fi))}${cd('Ventas · ticket promedio',r.n+' · '+fmt(r.n?r.tot/r.n:0))}</div>
  <div class="text-sm text-stone-500">Utilidad estimada (según costos registrados): <b class="text-emerald-700">${fmt(r.util)}</b></div></section>
@@ -361,7 +365,7 @@ function cuadreView(){
  <section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Ventas por fase')}${cats.map(([k,v])=>`<div class="text-sm"><div class="flex justify-between"><span>${esc(phName(k))}</span><b>${fmt(v)}</b></div><div class="h-2 rounded bg-slate-700"><div class="h-2 rounded bg-emerald-500" style="width:${Math.round(v/(r.tot||1)*100)}%"></div></div></div>`).join('')||none('Sin ventas en este turno.')}</section>
  <section class="bg-white rounded-2xl shadow p-4">${H('Más vendidos')}${tops.map(([n,t])=>`<div class="flex justify-between text-sm border-b py-1"><span>${esc(n)} <span class="text-stone-500">${t.w?(t.q/1000).toFixed(2)+' kg':t.q+' und'}</span></span><b>${fmt(t.v)}</b></div>`).join('')||none('Aún no hay datos.')}</section>
  <section class="bg-white rounded-2xl shadow p-4">${H('Fiados del turno')}${clis.map(([c,v])=>`<div class="flex justify-between text-sm border-b py-1"><span>${esc(c)}</span><b>${fmt(v)}</b></div>`).join('')||none('Sin fiados.')}</section>
- <section class="bg-white rounded-2xl shadow p-4">${H('Ventas del turno')}<div class="max-h-60 overflow-y-auto">${[...S.sales].sort((a,b)=>b.ts-a.ts).map(v=>`<div class="text-sm border-b py-1"><b>${new Date(v.ts).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</b> ${v.method}${v.customer?' ('+esc(v.customer)+')':''} · ${esc(v.items.map(i=>i.name+(i.w?' '+i.qty+'g':' ×'+i.qty)).join(', '))} <b class="float-right">${fmt(v.total)} <button onclick="showFact(S.sales.find(x=>x.ts===${v.ts}))">🧾</button></b></div>`).join('')||none('Sin ventas.')}</div></section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Ventas del turno')}<div class="max-h-60 overflow-y-auto">${[...S.sales].sort((a,b)=>b.ts-a.ts).map(v=>`<div class="text-sm border-b py-1"><b>${new Date(v.ts).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</b> ${v.method}${v.customer?' ('+esc(v.customer)+')':''} · ${esc(v.items.map(i=>i.name+(i.w?' '+i.qty+'g':' ×'+i.qty)).join(', '))} <b class="float-right">${fmt(v.total)} <button onclick="showFact(S.sales.find(x=>x.ts===${v.ts}))">🧾</button> <button onclick="anular(${v.ts})">🗑</button></b></div>`).join('')||none('Sin ventas.')}</div></section>
  <section class="bg-white rounded-2xl shadow p-4">${H('Historial de cierres')}${S.closes.map(c=>`<div class="border-b py-2 text-sm"><b>${new Date(c.ts).toLocaleString('es-CO')}</b>${c.nVentas!=null?' · '+c.nVentas+' ventas':''}<div>Efectivo ${fmt(c.efectivo)} · Digital ${fmt((c.nequi||0)+(c.daviplata||0))} · Fiado ${fmt(c.fiado||0)} · Gastos ${fmt(c.gastos||0)}</div><div>Esperado ${fmt(c.esperado)} · Contado ${fmt(c.contado)} · <b class="${c.diff<0?'text-red-600':'text-emerald-700'}">${c.diff===0?'Cuadrado':(c.diff<0?'Faltante ':'Sobrante ')+fmt(Math.abs(c.diff))}</b></div>${c.nota?`<div class="text-stone-500">📝 ${esc(c.nota)}</div>`:''}</div>`).join('')||none('Aún no hay cierres.')}</section></div></div>`;
  upd();
 }
@@ -734,6 +738,56 @@ function negView(){const B=S.biz,f=(id,l,ph,v)=>`<label class="block text-sm">${
  <button class="btn bg-emerald-600 text-white w-full" onclick="saveBiz()">Guardar</button></div>`}
 window.saveBiz=()=>{setDoc(doc(db,'config','negocio'),{name:$('#bN').value.trim(),nit:$('#bT').value.trim(),address:$('#bD').value.trim(),phone:$('#bP').value.trim(),footer:$('#bF').value.trim(),
  auto:$('#bA').checked,consec:Math.max(0,(+$('#bC').value||1)-1)},{merge:true}).catch(e=>toast(e.message));toast('Datos guardados ✔')};
+// ================= REPORTES (semana, quincena, mes) =================
+const seg=()=>`<div class="flex gap-2 mb-3">${[['turno','🧾 Turno actual'],['rep','📊 Reportes']].map(([k,l])=>`<button class="btn flex-1 ${(S.cq||'turno')===k?'bg-emerald-600 text-white':'bg-slate-800 text-slate-300'}" onclick="S.cq='${k}';${k==='rep'?'loadRp()':'cuadreView()'}">${l}</button>`).join('')}</div>`;
+function cuadreView(){(S.cq||'turno')==='rep'?repView():turnoView()}
+const D0=d=>{d=new Date(d);d.setHours(0,0,0,0);return d};
+function rango(p){const n=new Date(),y=n.getFullYear(),m=n.getMonth(),d=n.getDate(),lun=()=>{const x=D0(n);x.setDate(d-((n.getDay()+6)%7));return x};
+ if(p==='hoy')return[D0(n),new Date(+D0(n)+864e5)];
+ if(p==='semana'){const x=lun();return[x,new Date(+x+7*864e5)]}
+ if(p==='semant'){const x=lun();x.setDate(x.getDate()-7);return[x,new Date(+x+7*864e5)]}
+ if(p==='quincena')return d<=15?[new Date(y,m,1),new Date(y,m,16)]:[new Date(y,m,16),new Date(y,m+1,1)];
+ if(p==='quinant')return d<=15?[new Date(y,m-1,16),new Date(y,m,1)]:[new Date(y,m,1),new Date(y,m,16)];
+ if(p==='mes')return[new Date(y,m,1),new Date(y,m+1,1)];
+ if(p==='mesant')return[new Date(y,m-1,1),new Date(y,m,1)];
+ const a=D0(S.rp.a?S.rp.a+'T00:00':n),b=D0(S.rp.b?S.rp.b+'T00:00':n);return[a,new Date(+b+864e5)]}
+window.loadRp=async()=>{const [a,b]=rango(S.rp.p);S.rd=null;repView();
+ const q=n=>getDocs(query(collection(db,n),where('ts','>=',+a),where('ts','<',+b)));
+ try{const [x,y,z]=await Promise.all([q('sales'),q('expenses'),q('purchases')]);S.rd={a,b,sales:x.docs.map(d=>d.data()),exps:y.docs.map(d=>d.data()),buys:z.docs.map(d=>d.data())}}
+ catch(e){toast('No se pudo cargar: '+e.message)}
+ repView()};
+function rpStats(){const d=S.rd,r={tot:0,n:0,ef:0,nq:0,dv:0,fi:0,util:0,cat:{},top:{},day:{}},K={efectivo:'ef',nequi:'nq',daviplata:'dv',fiado:'fi'};
+ d.sales.forEach(v=>{r.tot+=v.total;r.n++;r[K[v.method]]+=v.total;const t=new Date(v.ts),k=t.getFullYear()*10000+(t.getMonth()+1)*100+t.getDate();r.day[k]=(r.day[k]||0)+v.total;
+  v.items.forEach(i=>{const p=S.products.find(x=>x.id===i.id);r.util+=i.subtotal-(p?(i.w?i.qty*p.cost/1000:i.qty*p.cost):0);
+   const f=p?.phase||'otro';r.cat[f]=(r.cat[f]||0)+i.subtotal;const o=r.top[i.name]||(r.top[i.name]={q:0,v:0,w:i.w});o.q+=i.qty;o.v+=i.subtotal})});
+ r.gs=d.exps.filter(e=>!e.purchaseId).reduce((a,e)=>a+e.amount,0);r.buy=d.buys.reduce((a,c)=>a+(c.total||Math.round((c.w?c.qty/1000:c.qty)*(c.cost||0))),0);r.net=r.util-r.gs;return r}
+function repView(){
+ const P=[['hoy','Hoy'],['semana','Semana'],['semant','Sem. pasada'],['quincena','Quincena'],['quinant','Quinc. pasada'],['mes','Mes'],['mesant','Mes pasado'],['rango','Fechas']];
+ let h=seg()+`<div class="flex gap-2 overflow-x-auto pb-2">${P.map(([k,l])=>`<button class="shrink-0 rounded-full px-3 py-1.5 text-sm font-bold border ${S.rp.p===k?'bg-emerald-600 border-emerald-500 text-white':'bg-slate-800 border-slate-700 text-slate-300'}" onclick="S.rp.p='${k}';loadRp()">${l}</button>`).join('')}</div>`;
+ if(S.rp.p==='rango')h+=`<div class="flex gap-2 flex-wrap mb-2"><input type="date" class="inp !w-auto" value="${S.rp.a||''}" onchange="S.rp.a=this.value"><input type="date" class="inp !w-auto" value="${S.rp.b||''}" onchange="S.rp.b=this.value"><button class="btn bg-emerald-600 text-white" onclick="loadRp()">Ver</button></div>`;
+ if(!S.rd){$('#main').innerHTML=h+'<p class="p-6 text-center text-stone-500">Cargando…</p>';return}
+ const r=rpStats(),fd=x=>x.toLocaleDateString('es-CO',{day:'2-digit',month:'short'}),days=Object.entries(r.day).sort((a,b)=>a[0]-b[0]),mx=Math.max(1,...days.map(x=>x[1])),nd=Math.max(1,days.length);
+ const cd=(a,b,hl)=>`<div class="rounded-xl border p-3 ${hl?'bg-emerald-50 border-emerald-200':'bg-stone-100'}"><div class="text-xs text-stone-500">${a}</div><div class="text-lg font-extrabold">${b}</div></div>`;
+ const H=t=>`<h2 class="text-lg font-extrabold mb-2">${t}</h2>`,N=t=>`<p class="text-sm text-stone-500">${t}</p>`;
+ const cats=Object.entries(r.cat).sort((a,b)=>b[1]-a[1]),tops=Object.entries(r.top).sort((a,b)=>b[1].v-a[1].v).slice(0,10);
+ $('#main').innerHTML=h+`<div class="text-sm text-stone-500 mb-2">${fd(S.rd.a)} al ${fd(new Date(S.rd.b-1))} · ${r.n} ventas</div>
+ <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">${cd('Total vendido',fmt(r.tot),1)}${cd('Ticket promedio',fmt(r.n?r.tot/r.n:0))}${cd('Promedio por día',fmt(r.tot/nd))}${cd('Efectivo',fmt(r.ef))}${cd('Nequi + Daviplata',fmt(r.nq+r.dv))}${cd('Fiado',fmt(r.fi))}${cd('Utilidad bruta',fmt(r.util))}${cd('Gastos',fmt(r.gs))}${cd('Compras de mercancía',fmt(r.buy))}${cd('Utilidad neta',fmt(r.net),1)}</div>
+ <div class="grid lg:grid-cols-2 gap-3"><section class="bg-white rounded-2xl shadow p-4 space-y-1">${H('Ventas por día')}${days.map(([k,v])=>`<div class="flex items-center gap-2 text-xs"><span class="w-11">${String(k).slice(6)}/${String(k).slice(4,6)}</span><div class="flex-1 h-4 rounded bg-slate-700"><div class="h-4 rounded bg-emerald-500" style="width:${Math.round(v/mx*100)}%"></div></div><b class="w-24 text-right">${fmt(v)}</b></div>`).join('')||N('Sin ventas en este periodo.')}</section>
+ <div class="space-y-3"><section class="bg-white rounded-2xl shadow p-4 space-y-2">${H('Ventas por fase')}${cats.map(([k,v])=>`<div class="text-sm"><div class="flex justify-between"><span>${esc(phName(k))}</span><b>${fmt(v)}</b></div><div class="h-2 rounded bg-slate-700"><div class="h-2 rounded bg-emerald-500" style="width:${Math.round(v/(r.tot||1)*100)}%"></div></div></div>`).join('')||N('Sin datos.')}</section>
+ <section class="bg-white rounded-2xl shadow p-4">${H('Más vendidos')}${tops.map(([n,t])=>`<div class="flex justify-between text-sm border-b py-1 gap-2"><span>${esc(n)} <span class="text-stone-500">${t.w?(t.q/1000).toFixed(2)+' kg':t.q+' und'}</span></span><b>${fmt(t.v)}</b></div>`).join('')||N('Sin datos.')}</section></div></div>
+ <button class="btn bg-stone-200 w-full mt-3" onclick="rpCopy()">Copiar resumen para WhatsApp</button>`;
+}
+window.rpCopy=()=>{const r=rpStats(),fd=x=>x.toLocaleDateString('es-CO',{day:'2-digit',month:'short'});
+ navigator.clipboard.writeText(`*RESUMEN ${fd(S.rd.a)} al ${fd(new Date(S.rd.b-1))}*\nVentas: ${r.n} · Total ${fmt(r.tot)}\nEfectivo: ${fmt(r.ef)}\nNequi+Daviplata: ${fmt(r.nq+r.dv)}\nFiado: ${fmt(r.fi)}\nUtilidad bruta: ${fmt(r.util)}\nGastos: ${fmt(r.gs)}\nCompras: ${fmt(r.buy)}\nUtilidad neta: ${fmt(r.net)}`).then(()=>toast('Resumen copiado'))};
+window.anular=ts=>{const v=S.sales.find(x=>x.ts===ts);if(!v||!confirm('¿Anular esta venta de '+fmt(v.total)+'? Se quita del cuadre y se devuelve el stock.'))return;
+ const b=writeBatch(db);b.delete(doc(db,'sales',v.id));
+ v.items.forEach(i=>{if(S.products.some(p=>p.id===i.id))b.update(doc(db,'products',i.id),{stock:increment(i.qty)})});
+ b.commit().catch(e=>toast(e.message));toast('Venta anulada')};
+window.delCompra=async id=>{const e=S.entries.find(x=>x.id===id);if(!e||!confirm('¿Borrar esta entrada? Se resta del inventario y, si se pagó de la caja, se quita del cuadre.'))return;
+ const b=writeBatch(db);b.delete(doc(db,'purchases',id));
+ if(S.products.some(p=>p.id===e.productId))b.update(doc(db,'products',e.productId),{stock:increment(-e.qty)});
+ try{const q=await getDocs(query(collection(db,'expenses'),where('purchaseId','==',id)));q.docs.forEach(d=>b.delete(d.ref))}catch(_){}
+ b.commit().catch(x=>toast(x.message));toast('Entrada borrada')};
 Object.assign(window,{$,toast,esc,fmt,invView,faltView,entView,cuadreView,negView,posView,shell});
 addEventListener('beforeinstallprompt',e=>{e.preventDefault();window._dp=e;$('#inst')?.classList.remove('hidden')});
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
